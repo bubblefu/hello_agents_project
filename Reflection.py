@@ -1,29 +1,35 @@
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional,Literal,TypedDict
 from base_agent import HelloAgentsLLM
+from log import logger
 """
       ——————  Part 1 : Memory模块 ———————
             1. Reflection 的核心在于迭代，而迭代的前提是能够记住之前的尝试和获得的反馈。
             2. 一个“短期记忆”模块是实现该范式的必需品。这个记忆模块将负责存储每一次“执行-反思”循环的完整轨迹。
 """
+RecordType = Literal["execution", "reflection"]
+class Record(TypedDict):
+    type:RecordType
+    content: str
+
 class Memory:
     """
     一个简单的短期记忆模块，用于存储智能体的行动与反思轨迹。
     """
     def __init__(self):
         # 初始化空列表来存储所有记录
-        self.records: List[Dict[str, Any]] = []
+        self.records: List[Record] = []
 
-    def add_record(self, record_type: str, content: str):
+    def add_record(self, record_type: RecordType, content: str) -> None:
         """
         向记忆中添加一条新记录。
 
         参数:
-        - record_type (str): 记录的类型 ('execution' 或 'reflection')。
+        - record_type (RecordType): 记录的类型 ('execution' 或 'reflection'),用 Literal 限制
         - content (str): 记录的具体内容 (例如，生成的代码或反思的反馈)。
         """
         record = {"type": record_type, "content": content}
         self.records.append(record)
-        print(f"记忆已更新，增加一条'{record_type}'记录")
+        logger.info("记忆已更新，增加一条'%s'记录", record_type)
     
     def get_trajectory(self) -> str:
         """
@@ -46,7 +52,8 @@ class Memory:
         for record in reversed(self.records):
             if record['type'] == 'execution':
                 return record['content']
-        return None
+        # 不直接返回 Optional，而是抛异常（在关键路径里更安全）
+        return ValueError("No execution record found")
 
 """
       ——————  Part 2 : Reflection Prompt Words ———————
@@ -56,8 +63,8 @@ class Memory:
 """
 
 INITIAL_PROMPT_TEMPLATE = """
-你是一位资深的Python程序员。请根据以下要求，编写一个Python函数。
-你的代码必须包含完整的函数签名、文档字符串，并遵循PEP 8编码规范。
+你是一位资深的Python程序员。请根据以下要求,编写一个Python函数。
+你的代码必须包含完整的函数签名、文档字符串,并遵循PEP 8编码规范。
 
 要求：{task}
 
@@ -66,7 +73,7 @@ INITIAL_PROMPT_TEMPLATE = """
 
 REFLECT_PROMPT_TEMPLATE = """
 你是一位及其严格的代码评审专家和资深算法工程师，对代码的性能有极致要求。
-你的任务是审查以下Python代码，并专注于找出其在<strong>算法效率</strong>上的主要瓶颈
+你的任务是审查以下Python代码,并专注于找出其在<strong>算法效率</strong>上的主要瓶颈
 
 # 原始任务：
 {task}
@@ -96,7 +103,7 @@ REFINE_PROMPT_TEMPLATE = """
 {feedback}
 
 请根据评审员的反馈，生成一个优化后的新版本代码。
-你的代码必须包含完整的函数签名、文档字符串，并遵循PEP 8编码规范。
+你的代码必须包含完整的函数签名、文档字符串,并遵循PEP 8编码规范。
 请直接输出优化后的代码，不要包含任何额外的解释。
 """
 
@@ -112,20 +119,21 @@ class ReflectionAgent:
         return response_text
     
     def run(self, task: str):
-        print(f"\n --- 开始处理任务 ---\n任务：{task}")
+        # print(f"\n --- 开始处理任务 ---\n任务：{task}")
+        logger.info("开始处理任务:%s", task)
 
         # ---1. 初始执行 ---
-        print("\n --- 正在进行初始尝试 ---")
+        logger.info("正在进行初始尝试")
         initial_prompt = INITIAL_PROMPT_TEMPLATE.format(task=task)
         initial_code = self._get_llm_response(initial_prompt)
         self.memory.add_record("execution", initial_code)
 
         # ---2. 迭代循环：反思与优化 ---
         for i in range(self.max_iterations):
-            print(f"\n--- 第{i+1}/{self.max_iterations}轮迭代 ---")
+            logger.info("第 %d / %d 轮迭代",i+1, self.max_iterations)
 
             # a. 反思
-            print("\n -> 正在进行反思...")
+            logger.info("正在进行反思")
             last_code = self.memory.get_last_execution()
             reflect_prompt = REFLECT_PROMPT_TEMPLATE.format(task=task, code=last_code)
             feedback = self._get_llm_response(reflect_prompt)
@@ -133,11 +141,11 @@ class ReflectionAgent:
 
             # b. 检查是否需要停止
             if "无需改进" in feedback:
-                print("\n 反思认为代码已无需改进，任务完成。")
+                logger.warning("反思认为代码已无需改进，任务提前结束")
                 break
 
             # c. 优化
-            print("\n -> 正在进行优化...")
+            logger.info("正在进行优化")
             refine_prompt = REFINE_PROMPT_TEMPLATE.format(
                 task=task,
                 last_code_attempt=last_code,
@@ -147,14 +155,15 @@ class ReflectionAgent:
             self.memory.add_record("execution", refined_code)
         
         final_code = self.memory.get_last_execution()
-        print(f"\n--- 任务完成 ---\n最终生成的代码:\n```python\n{final_code}\n```")
+        logger.info("任务完成")
+        logger.debug("最终生成的代码:\n%s", final_code)
         return final_code
 
 if __name__ == '__main__':
     try:
         llm_client  = HelloAgentsLLM()
     except Exception as e:
-        print(f"初始化LLM客户端时出错: {e}")
+        logger.error("初始化 LLM 客户端失败: %s", e)
         exit()
     
     agent = ReflectionAgent(llm_client, max_iterations=2)   
