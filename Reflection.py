@@ -1,6 +1,7 @@
 from typing import List, Dict, Any, Optional,Literal,TypedDict
 from base_agent import HelloAgentsLLM
 from log import logger
+import json
 """
       ——————  Part 1 : Memory模块 ———————
             1. Reflection 的核心在于迭代，而迭代的前提是能够记住之前的尝试和获得的反馈。
@@ -30,7 +31,7 @@ class Memory:
         record = {"type": record_type, "content": content}
         self.records.append(record)
         logger.info("记忆已更新，增加一条'%s'记录", record_type)
-    
+    # 先保留get_trajectory function 
     def get_trajectory(self) -> str:
         """
         将所有记忆记录格式化为一个连贯的字符串文本，用于构建提示词。
@@ -52,9 +53,7 @@ class Memory:
         for record in reversed(self.records):
             if record['type'] == 'execution':
                 return record['content']
-        # 不直接返回 Optional，而是抛异常（在关键路径里更安全）
-        return ValueError("No execution record found")
-
+        return None
 """
       ——————  Part 2 : Reflection Prompt Words ———————
             1. INITIAL_PROMPT_TEMPLATE ———— 智能体首次尝试解决问题的提示词，内容相对直接，只要求模型完成指定任务。
@@ -73,7 +72,7 @@ INITIAL_PROMPT_TEMPLATE = """
 
 REFLECT_PROMPT_TEMPLATE = """
 你是一位及其严格的代码评审专家和资深算法工程师，对代码的性能有极致要求。
-你的任务是审查以下Python代码,并专注于找出其在<strong>算法效率</strong>上的主要瓶颈
+你的任务是审查以下Python代码,并专注于找出其在算法效率上的主要瓶颈。
 
 # 原始任务：
 {task}
@@ -84,10 +83,13 @@ REFLECT_PROMPT_TEMPLATE = """
 ```
 
 请分析该代码的时间复杂度，并思考是否存在一种<strong>算法上更优</strong>的解决方案来显著提升性能。
-如果存在，请清晰地指出当前算法的不足，并提出具体的、可行的改进算法建议。
-如果代码在算法层面上已经达到最优，才能回答“无需改进”
 
-请直接输出你的反馈，不要包含任何额外的解释。
+请你严格按照以下 JSON 格式输出，不要包含任何多余文本，不要使用 Markdown，不要添加解释,请确保输出的 JSON 包含 "needs_improvement"、"analysis" 和 "suggestion" 三个字段。：
+{{
+"needs_improvement": true 或 false,
+"analysis": "对当前算法复杂度的简要分析",
+"suggestion": "如果 needs_improvement 为 true，给出明确的优化方向；否则填写 空字符串"
+}}
 """
 
 REFINE_PROMPT_TEMPLATE = """
@@ -135,12 +137,25 @@ class ReflectionAgent:
             # a. 反思
             logger.info("正在进行反思")
             last_code = self.memory.get_last_execution()
+            if last_code is None:
+                logger.error("没有找到上一次的执行记录")
+                break
             reflect_prompt = REFLECT_PROMPT_TEMPLATE.format(task=task, code=last_code)
             feedback = self._get_llm_response(reflect_prompt)
-            self.memory.add_record("reflection", feedback)
-
+            
             # b. 检查是否需要停止
-            if "无需改进" in feedback:
+            try:
+                data = json.loads(feedback)   # json.loads 输入JSON格式，返回python的格式类型，这里是字典
+            except json.JSONDecodeError:
+                logger.error("反思阶段JSON解析失败（第 %d 轮），内容为：%s", i+1, feedback[:200])
+                break           
+            #   b.1 提取反馈内容
+            analysis = data["analysis"]
+            suggestion = data["suggestion"]
+            feedback_text = f"{analysis}\n{suggestion}".strip()
+            self.memory.add_record("reflection", feedback_text)
+            #   b.2 判断是否停止
+            if not data.get("needs_improvement",True):        # 即使字段缺失，也不会崩
                 logger.warning("反思认为代码已无需改进，任务提前结束")
                 break
 
@@ -170,3 +185,32 @@ if __name__ == '__main__':
 
     task = "编写一个Python函数，找出1到n之间所有的素数 (prime numbers)。"
     agent.run(task)
+
+
+
+"""
+reflection 如何明确停止改进的条件？  reflection 本质是“决策控制问题”，不是 prompt 问题。
+
+1. 外部evaluator
+    写单元测试
+    写规则校验
+    用另一个模型评分
+    用embedding similarity
+2. 规则型停止
+    达到最大轮数          ————客观却粗糙
+    达到token上限         
+    分数超过阈值
+3. 模型自评型停止         ————半主观
+    给当前方案打多少分，超过了就可以了。很多research agent用这个
+
+"""
+
+
+"""
+注意：只有最外层的 `{` 和 `}` 被转义为 `{{` 和 `}}`，而 `{task}` 和 `{code}` 保持不变，因为它们是真正的 `.format()` 占位符。
+
+- `{{` → 在最终字符串中变成 `{`
+- `}}` → 在最终字符串中变成 `}`
+- `{task}` → 被替换为实际任务内容
+- `{code}` → 被替换为实际代码
+"""
