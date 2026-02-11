@@ -110,15 +110,27 @@ REFINE_PROMPT_TEMPLATE = """
 """
 
 class ReflectionAgent:
-    def __init__(self, llm_client, max_iterations=3):
+    def __init__(self, llm_client, max_iterations=3, default_temperature=0.2):
         self.llm_client = llm_client
         self.memory = Memory()
         self.max_iterations = max_iterations
+        self.default_temperature = default_temperature
     
-    def _get_llm_response(self, prompt: str) -> str:
+    def _get_llm_response(self, prompt: str, temperature: float = None) -> str:
+        if temperature is None:
+            temperature = self.default_temperature
         messages = [{"role": "user", "content": prompt}]
-        response_text = self.llm_client.think(messages=messages) or ""
+        response_text = self.llm_client.think(messages=messages, temperature=temperature) or ""
         return response_text
+    # JSON容错清洗
+    def _extract_json(self, text: str) -> str:
+        text = text.strip()
+        if text.startswith("```"):
+            parts = text.split("```")
+            if len(parts) >= 2:
+                text = parts[1]
+        text = text.replace("json","", 1).strip()
+        return text
     
     def run(self, task: str):
         # print(f"\n --- 开始处理任务 ---\n任务：{task}")
@@ -127,7 +139,7 @@ class ReflectionAgent:
         # ---1. 初始执行 ---
         logger.info("正在进行初始尝试")
         initial_prompt = INITIAL_PROMPT_TEMPLATE.format(task=task)
-        initial_code = self._get_llm_response(initial_prompt)
+        initial_code = self._get_llm_response(initial_prompt, temperature=0.3)
         self.memory.add_record("execution", initial_code)
 
         # ---2. 迭代循环：反思与优化 ---
@@ -141,8 +153,7 @@ class ReflectionAgent:
                 logger.error("没有找到上一次的执行记录")
                 break
             reflect_prompt = REFLECT_PROMPT_TEMPLATE.format(task=task, code=last_code)
-            feedback = self._get_llm_response(reflect_prompt)
-            
+            feedback = self._extract_json(self._get_llm_response(reflect_prompt, temperature=0.1))
             # b. 检查是否需要停止
             try:
                 data = json.loads(feedback)   # json.loads 输入JSON格式，返回python的格式类型，这里是字典
@@ -166,7 +177,7 @@ class ReflectionAgent:
                 last_code_attempt=last_code,
                 feedback=feedback
             )
-            refined_code = self._get_llm_response(refine_prompt)
+            refined_code = self._get_llm_response(refine_prompt, temperature=0.2)
             self.memory.add_record("execution", refined_code)
         
         final_code = self.memory.get_last_execution()
