@@ -70,7 +70,7 @@ if __name__ == '__main__':
         
         exampleMessages = [
             {"role": "system", "content": "You are a helpful assistant that writes Python code."},
-            {"role": "user", "content": "写一个三数之和，非常简单的回答就行"}
+            {"role": "user", "content": "斯蒂芬霍金的物理学成就，简单说一下就行"}
         ]
         
         print("--- 调用LLM ---")
