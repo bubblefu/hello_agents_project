@@ -1,5 +1,5 @@
 import re
-from base_agent import HelloAgentsLLM
+from core.llm import HelloAgentsLLM
 from search_tool import ToolExecutor, search
 
 # (此处省略 REACT_PROMPT_TEMPLATE 的定义)
